@@ -26,7 +26,6 @@ OUTDIR="$4"
 TMPWDIR="$(mktemp -d --suffix .uefisign)"
 DISK_IMAGE="$TMPWDIR/disk.raw"
 EFI_IMAGE="$TMPWDIR/efi-partition.img"
-SIGNED_EFI="$TMPWDIR/BOOTX64.EFI.signed"
 SIGNED_ZST="$OUTDIR/signed_$(basename "$DISK_IMAGE_ZST")"
 
 on_exit() {
@@ -76,6 +75,8 @@ fat_path() {
   [[ "${p:0:1}" == "/" ]] || p="/$p"
   printf '%s' "$p"
 }
+
+BOOTLOADER="$(mdir -i "$EFI_IMAGE" ::/EFI/BOOT/ | awk '/BOOTAA64|BOOTX64/ {print $1; exit}').EFI"
 
 # Copy all loader entries from ESP to TMPWDIR
 # (ignore errors if globs don't match)
@@ -138,7 +139,7 @@ ukify build \
   --linux "$TMPWDIR/bzImage.efi" \
   "${INITRD_ARGS[@]}" \
   --cmdline "@$TMPWDIR/cmdline" \
-  --output "$TMPWDIR/BOOTX64.EFI.uki"
+  --output "$TMPWDIR/$BOOTLOADER.uki"
 
 # defaults
 PKEY_PROV="file"
@@ -161,11 +162,11 @@ systemd-sbsign sign \
   --private-key "$PKEY" \
   --certificate-source "$CERT_PROV" \
   --certificate "$CERT" \
-  --output "$SIGNED_EFI" "$TMPWDIR/BOOTX64.EFI.uki"
+  --output "$TMPWDIR/$BOOTLOADER.signed" "$TMPWDIR/$BOOTLOADER.uki"
 
 UKI_DST_REL="/EFI/nixos/uki-signed.efi"
 log "[*] Placing signed UKI at ${UKI_DST_REL} in the ESP..."
-mcopy -o -i "$EFI_IMAGE" "$SIGNED_EFI" "::${UKI_DST_REL}"
+mcopy -o -i "$EFI_IMAGE" "$TMPWDIR/$BOOTLOADER.signed" "::${UKI_DST_REL}"
 
 # Re-write loader entry: linux → UKI, remove initrd lines (keep options)
 awk -v new="${UKI_DST_REL}" '
@@ -178,9 +179,9 @@ awk -v new="${UKI_DST_REL}" '
 log "[*] Updating loader entry to boot the UKI..."
 mcopy -o -i "$EFI_IMAGE" "$TMPWDIR/tmp_entry" "::/loader/entries/$(basename "$entry_file")"
 
-# Also refresh fallback BOOTX64.EFI for good measure
-log "[*] Updating fallback EFI/BOOT/BOOTX64.EFI ..."
-mcopy -o -i "$EFI_IMAGE" "$SIGNED_EFI" ::/EFI/BOOT/BOOTX64.EFI
+# Also refresh fallback bootloader for good measure
+log "[*] Updating fallback EFI/BOOT/$BOOTLOADER ..."
+mcopy -o -i "$EFI_IMAGE" "$TMPWDIR/$BOOTLOADER.signed" "::/EFI/BOOT/$BOOTLOADER"
 
 log "[*] Writing updated EFI partition back to disk image..."
 dd if="$EFI_IMAGE" of="$DISK_IMAGE" bs=512 seek="$EFI_START" conv=notrunc status=none
